@@ -1,4 +1,5 @@
 mod app;
+mod charts;
 mod metrics;
 
 fn main() -> eframe::Result<()> {
