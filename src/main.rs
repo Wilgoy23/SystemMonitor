@@ -1,6 +1,7 @@
 mod app;
 mod charts;
 mod metrics;
+mod panels;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {

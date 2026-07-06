@@ -1,0 +1,40 @@
+use eframe::egui;
+use crate::metrics::SysHandles;
+
+mod cpu;
+mod memory;
+mod disks;
+mod network;
+mod processes;
+mod temps;
+
+pub use cpu::CpuPanel;
+pub use memory::MemoryPanel;
+pub use disks::DisksPanel;
+pub use network::NetworkPanel;
+pub use processes::ProcessesPanel;
+pub use temps::TempsPanel;
+
+/// A single self-contained section of the monitor. It keeps its own derived
+/// state (histories, sorted lists, ...), pulls what it needs from the shared
+/// `SysHandles` on refresh, and draws itself on `ui`.
+pub trait Panel {
+    /// Heading shown above the panel.
+    fn name(&self) -> &str;
+    /// Extract this panel's data from the freshly refreshed OS handles.
+    fn refresh(&mut self, h: &SysHandles);
+    /// Render the panel.
+    fn ui(&mut self, ui: &mut egui::Ui);
+}
+
+/// The default set of panels, in display order.
+pub fn default_panels() -> Vec<Box<dyn Panel>> {
+    vec![
+        Box::new(CpuPanel::default()),
+        Box::new(MemoryPanel::default()),
+        Box::new(DisksPanel::default()),
+        Box::new(NetworkPanel::default()),
+        Box::new(ProcessesPanel::default()),
+        Box::new(TempsPanel::default()),
+    ]
+}
