@@ -36,7 +36,11 @@ impl Source {
     }
 
     pub fn refresh(&mut self) -> SysHandles<'_> {
-        self.sys.refresh_all();
+        // Refresh only what the panels actually read, rather than the whole
+        // system (which would also rescan every process's disk/env/etc).
+        self.sys.refresh_cpu();
+        self.sys.refresh_memory();
+        self.sys.refresh_processes();
         self.disks.refresh();
         self.networks.refresh();
         self.components.refresh();
