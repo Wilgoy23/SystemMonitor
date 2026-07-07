@@ -6,6 +6,7 @@ mod memory;
 mod disks;
 mod network;
 mod processes;
+mod system;
 mod temps;
 
 pub use cpu::CpuPanel;
@@ -13,6 +14,7 @@ pub use memory::MemoryPanel;
 pub use disks::DisksPanel;
 pub use network::NetworkPanel;
 pub use processes::ProcessesPanel;
+pub use system::SystemPanel;
 pub use temps::TempsPanel;
 
 /// A single self-contained section of the monitor. It keeps its own derived
@@ -30,6 +32,7 @@ pub trait Panel {
 /// The default set of panels, in display order.
 pub fn default_panels() -> Vec<Box<dyn Panel>> {
     vec![
+        Box::new(SystemPanel::default()),
         Box::new(CpuPanel::default()),
         Box::new(MemoryPanel::default()),
         Box::new(DisksPanel::default()),
