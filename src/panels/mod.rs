@@ -4,6 +4,7 @@ use crate::metrics::SysHandles;
 mod cpu;
 mod memory;
 mod disks;
+mod gpu;
 mod network;
 mod processes;
 mod system;
@@ -12,6 +13,7 @@ mod temps;
 pub use cpu::CpuPanel;
 pub use memory::MemoryPanel;
 pub use disks::DisksPanel;
+pub use gpu::GpuPanel;
 pub use network::NetworkPanel;
 pub use processes::ProcessesPanel;
 pub use system::SystemPanel;
@@ -39,5 +41,6 @@ pub fn default_panels() -> Vec<Box<dyn Panel>> {
         Box::new(NetworkPanel::default()),
         Box::new(ProcessesPanel::default()),
         Box::new(TempsPanel::default()),
+        Box::new(GpuPanel::default()),
     ]
 }
