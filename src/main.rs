@@ -3,6 +3,7 @@ mod charts;
 mod history;
 mod metrics;
 mod panels;
+mod platform;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {

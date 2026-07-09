@@ -27,14 +27,34 @@ pub fn usage_bar(ui: &mut egui::Ui, label: &str, used: u64, total: u64) {
         0.0
     };
 
-    ui.label(format!(
-        "{}: {} / {}",
-        label,
-        format_bytes(used),
-        format_bytes(total)
-    ));
+    if label.is_empty() {
+        ui.label(format!("{} / {}", format_bytes(used), format_bytes(total)));
+    } else {
+        ui.label(format!(
+            "{}: {} / {}",
+            label,
+            format_bytes(used),
+            format_bytes(total)
+        ));
+    }
 
     let mut bar = egui::ProgressBar::new(fraction).text(format!("{:.0}%", fraction * 100.0));
+    if let Some(color) = threshold_color(fraction) {
+        bar = bar.fill(color);
+    }
+    ui.add(bar);
+}
+
+/// A bare progress bar (no leading label line) showing `part` as a fraction
+/// of `whole` — used where the name/size are already shown in a grid column
+/// and repeating them via `usage_bar` would be redundant.
+pub fn size_bar(ui: &mut egui::Ui, part: u64, whole: u64) {
+    let fraction = if whole > 0 {
+        (part as f32 / whole as f32).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let mut bar = egui::ProgressBar::new(fraction).desired_width(80.0).show_percentage();
     if let Some(color) = threshold_color(fraction) {
         bar = bar.fill(color);
     }
