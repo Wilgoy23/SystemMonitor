@@ -78,6 +78,33 @@ pub fn per_core_bars(ui: &mut egui::Ui, cores: &[f32]) {
     }
 }
 
+/// Draw a compact, chrome-free line chart of a rolling history for widget
+/// cards: no axes, grid, or interaction, just the trend line. `y_to_100`
+/// locks the y-range to 0–100 (percent metrics); otherwise it auto-scales
+/// from zero (rates).
+pub fn sparkline(ui: &mut egui::Ui, id: &str, history: &History, height: f32, y_to_100: bool) {
+    let points: PlotPoints = history
+        .iter()
+        .enumerate()
+        .map(|(i, v)| [i as f64, v])
+        .collect();
+
+    let mut plot = Plot::new(id)
+        .height(height)
+        .show_axes([false, false])
+        .show_grid(false)
+        .show_x(false)
+        .show_y(false)
+        .allow_drag(false)
+        .allow_zoom(false)
+        .allow_scroll(false)
+        .include_y(0.0);
+    if y_to_100 {
+        plot = plot.include_y(100.0);
+    }
+    plot.show(ui, |plot_ui| plot_ui.line(Line::new(points)));
+}
+
 /// Draw download/upload throughput history (bytes/sec) as two lines (KB/s).
 pub fn network_plot(ui: &mut egui::Ui, down: &History, up: &History) {
     let to_kb = |h: &History| -> PlotPoints {

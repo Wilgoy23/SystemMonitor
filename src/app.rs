@@ -1,7 +1,12 @@
 use eframe::egui;
+use crate::dashboard::{Dashboard, WidgetEntry};
 use crate::metrics::Source;
 use crate::panels::{self, Panel};
 use std::time::{Duration, Instant};
+
+/// The pseudo-tab that shows the widget dashboard. Not a `Panel`; handled
+/// specially in the tab bar and central panel. No panel is named this.
+const DASHBOARD_TAB: &str = "Dashboard";
 
 /// User-tweakable settings, persisted across runs via eframe storage.
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -12,6 +17,7 @@ struct Settings {
     hidden: Vec<String>,       // panel names the user has hidden
     panel_order: Vec<String>,  // user-defined tab order, by panel name
     active_tab: Option<String>, // last-selected tab
+    widgets: Vec<WidgetEntry>, // dashboard layout; vec order == display order
 }
 
 impl Default for Settings {
@@ -22,6 +28,7 @@ impl Default for Settings {
             hidden: Vec::new(),
             panel_order: Vec::new(),
             active_tab: None,
+            widgets: Vec::new(),
         }
     }
 }
@@ -29,19 +36,29 @@ impl Default for Settings {
 pub struct App {
     source: Source,
     panels: Vec<Box<dyn Panel>>,
+    dashboard: Dashboard,
     settings: Settings,
     last_refresh: Instant,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let settings = cc
+        let mut settings = cc
             .storage
             .and_then(|s| eframe::get_value::<Settings>(s, eframe::APP_KEY))
             .unwrap_or_default();
 
+        // Fresh install: seed the default dashboard and open on it.
+        if settings.widgets.is_empty() {
+            settings.widgets = Dashboard::default_layout();
+        }
+        if settings.active_tab.is_none() {
+            settings.active_tab = Some(DASHBOARD_TAB.to_string());
+        }
+
         let mut source = Source::new();
         let mut panels = panels::default_panels();
+        let mut dashboard = Dashboard::from_entries(&settings.widgets);
 
         // Apply the user's saved tab order, if any. Panels not mentioned
         // (e.g. newly added ones) keep their natural position at the end.
@@ -50,15 +67,17 @@ impl App {
             panels.sort_by_key(|p| order.iter().position(|n| n == p.name()).unwrap_or(usize::MAX));
         }
 
-        // Prime every panel once so the first frame has data.
+        // Prime every panel and widget once so the first frame has data.
         let handles = source.refresh();
         for panel in &mut panels {
             panel.refresh(&handles);
         }
+        dashboard.refresh(&handles);
 
         Self {
             source,
             panels,
+            dashboard,
             settings,
             last_refresh: Instant::now(),
         }
@@ -74,6 +93,7 @@ impl eframe::App for App {
             for panel in &mut self.panels {
                 panel.refresh(&handles);
             }
+            self.dashboard.refresh(&handles);
             self.last_refresh = Instant::now();
         }
 
@@ -103,6 +123,17 @@ impl eframe::App for App {
 
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
             ui.horizontal(|ui| {
+                // Dashboard is always the first, fixed (non-draggable) tab.
+                let dash_active =
+                    self.settings.active_tab.as_deref() == Some(DASHBOARD_TAB);
+                if ui
+                    .add(egui::Button::new("⌂ Dashboard").selected(dash_active))
+                    .clicked()
+                {
+                    self.settings.active_tab = Some(DASHBOARD_TAB.to_string());
+                }
+                ui.separator();
+
                 let hidden = self.settings.hidden.clone();
                 let visible: Vec<usize> = self
                     .panels
@@ -165,6 +196,13 @@ impl eframe::App for App {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.settings.active_tab.as_deref() == Some(DASHBOARD_TAB) {
+                ui.heading("Dashboard");
+                ui.separator();
+                egui::ScrollArea::vertical().show(ui, |ui| self.dashboard.ui(ui));
+                return;
+            }
+
             let hidden = self.settings.hidden.clone();
             let visible_names: Vec<String> = self
                 .panels
@@ -202,6 +240,7 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.settings.widgets = self.dashboard.to_entries();
         eframe::set_value(storage, eframe::APP_KEY, &self.settings);
     }
 }

@@ -1,9 +1,11 @@
 mod app;
 mod charts;
+mod dashboard;
 mod history;
 mod metrics;
 mod panels;
 mod platform;
+mod widgets;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
