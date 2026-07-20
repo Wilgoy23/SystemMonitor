@@ -72,27 +72,73 @@ pub trait Widget {
     }
 }
 
-/// Draw a "bubble" card: a rounded, subtly filled rect with a weak title row
-/// above a clipped body. `rect` is the full card footprint; the body is laid
-/// out inside consistent padding. The shared frame enforces padding and
-/// typography so widgets only worry about their content.
+/// Draw a glassmorphic "bubble" card: a soft drop shadow, a translucent
+/// frosted fill with a light edge highlight, and a weak title row above a
+/// clipped body. `rect` is the full card footprint; the body is laid out
+/// inside consistent padding. egui 0.28 has no real backdrop blur, so the
+/// "glass" is a translucent fill over the dashboard's gradient backdrop plus
+/// a highlight stroke — the look without live refraction.
 pub fn card(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     title: &str,
     body: impl FnOnce(&mut egui::Ui),
 ) {
-    let visuals = ui.visuals();
-    let fill = visuals.faint_bg_color;
-    let stroke = visuals.widgets.noninteractive.bg_stroke;
-    ui.painter()
-        .rect(rect, egui::Rounding::same(16.0), fill, stroke);
+    let dark = ui.visuals().dark_mode;
+    let rounding = egui::Rounding::same(16.0);
+
+    // Soft drop shadow to lift the glass off the backdrop.
+    let shadow = egui::epaint::Shadow {
+        offset: egui::vec2(0.0, 6.0),
+        blur: 20.0,
+        spread: 0.0,
+        color: egui::Color32::from_black_alpha(if dark { 110 } else { 45 }),
+    };
+    ui.painter().add(shadow.as_shape(rect, rounding));
+
+    // Frosted fill + bright edge highlight.
+    let fill = if dark {
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 160)
+    };
+    let stroke = egui::Stroke::new(
+        1.0,
+        if dark {
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 48)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 220)
+        },
+    );
+    ui.painter().rect(rect, rounding, fill, stroke);
+
+    // A brighter sheen along the top edge sells the glass.
+    let sheen = egui::Color32::from_rgba_unmultiplied(255, 255, 255, if dark { 28 } else { 90 });
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.left() + 14.0, rect.top() + 1.0),
+            egui::pos2(rect.right() - 14.0, rect.top() + 1.0),
+        ],
+        egui::Stroke::new(1.0, sheen),
+    );
+
+    // The glass fill washes out the default (already-dimmed) text, so force
+    // high-contrast body text and a legible—if secondary—title tone.
+    let (body_col, title_col) = if dark {
+        (egui::Color32::from_gray(236), egui::Color32::from_gray(200))
+    } else {
+        (egui::Color32::from_gray(20), egui::Color32::from_gray(70))
+    };
 
     let inner = rect.shrink(12.0);
     ui.allocate_ui_at_rect(inner, |ui| {
         ui.set_clip_rect(inner);
+        ui.visuals_mut().override_text_color = Some(body_col);
         ui.vertical(|ui| {
-            ui.add(egui::Label::new(egui::RichText::new(title).weak().small()).truncate());
+            ui.add(
+                egui::Label::new(egui::RichText::new(title).color(title_col).small())
+                    .truncate(),
+            );
             body(ui);
         });
     });

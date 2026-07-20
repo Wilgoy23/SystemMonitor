@@ -121,15 +121,19 @@ impl eframe::App for App {
             });
         });
 
+        // The dashboard is the standalone full-screen home; the panel tab
+        // strip only appears once the user has drilled into the detail layer.
+        let on_home = self
+            .settings
+            .active_tab
+            .as_deref()
+            .map_or(true, |t| t == DASHBOARD_TAB);
+
+        if !on_home {
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                // Dashboard is always the first, fixed (non-draggable) tab.
-                let dash_active =
-                    self.settings.active_tab.as_deref() == Some(DASHBOARD_TAB);
-                if ui
-                    .add(egui::Button::new("⌂ Dashboard").selected(dash_active))
-                    .clicked()
-                {
+                // Return to the standalone dashboard home.
+                if ui.add(egui::Button::new("⌂ Home")).clicked() {
                     self.settings.active_tab = Some(DASHBOARD_TAB.to_string());
                 }
                 ui.separator();
@@ -194,12 +198,31 @@ impl eframe::App for App {
                 }
             });
         });
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            if self.settings.active_tab.as_deref() == Some(DASHBOARD_TAB) {
-                ui.heading("Dashboard");
-                ui.separator();
-                egui::ScrollArea::vertical().show(ui, |ui| self.dashboard.ui(ui));
+            // Recompute rather than reuse `on_home`: the Home button in the
+            // tab strip (rendered above, this same frame) may have just
+            // switched us back to the dashboard, and the panel fallback below
+            // would otherwise clobber `active_tab` with the first panel name.
+            let is_home = self
+                .settings
+                .active_tab
+                .as_deref()
+                .map_or(true, |t| t == DASHBOARD_TAB);
+            if is_home {
+                // Full-screen standalone home: gradient backdrop behind a
+                // reflowing grid of glass bubbles. Clicking one drills into
+                // its panel (the detail layer).
+                let backdrop = ui.max_rect();
+                crate::dashboard::paint_backdrop(ui.painter(), backdrop, ui.visuals().dark_mode);
+                egui::ScrollArea::vertical()
+                    .show(ui, |ui| {
+                        ui.add_space(8.0);
+                        if let Some(panel) = self.dashboard.ui(ui) {
+                            self.settings.active_tab = Some(panel);
+                        }
+                    });
                 return;
             }
 

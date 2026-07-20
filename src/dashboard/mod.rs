@@ -92,11 +92,13 @@ impl Dashboard {
         }
     }
 
-    /// Render the grid. M1: static flow layout, no editing.
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
+    /// Render the grid. Returns the name of a linked panel if a widget was
+    /// clicked, so the caller can navigate to it. M1: static flow layout,
+    /// no editing — only click-through.
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<String> {
         if self.instances.is_empty() {
             ui.weak("No widgets.");
-            return;
+            return None;
         }
 
         let avail = ui.available_width();
@@ -108,6 +110,7 @@ impl Dashboard {
         let rows = layout::row_count(&placements, &footprints);
 
         let origin = ui.cursor().min;
+        let mut clicked_panel = None;
         for (instance, (&(col, row), &(wc, hc))) in self
             .instances
             .iter_mut()
@@ -122,10 +125,49 @@ impl Dashboard {
             let title = instance.widget.title();
             let size = instance.size;
             widgets::card(ui, rect, &title, |ui| instance.widget.ui(ui, size));
+
+            // Whole-card click opens the linked panel. Registered after the
+            // card body so it sits above any (non-interactive) inner plots.
+            if let Some(panel) = instance.widget.linked_panel() {
+                let id = egui::Id::new(("widget_card", instance.id));
+                let resp = ui
+                    .interact(rect, id, egui::Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if resp.clicked() {
+                    clicked_panel = Some(panel.to_string());
+                }
+            }
         }
 
         // Reserve the grid's footprint so the scroll area sizes correctly.
         let total_h = rows as f32 * cell + (rows.saturating_sub(1)) as f32 * GAP;
         ui.allocate_space(egui::vec2(avail, total_h));
+
+        clicked_panel
     }
+}
+
+/// Paint a subtle vertical gradient across `rect`, giving the translucent glass
+/// cards something to sit over so their frosted fill actually reads. Theme-aware.
+pub fn paint_backdrop(painter: &egui::Painter, rect: egui::Rect, dark: bool) {
+    use egui::epaint::{Mesh, Vertex};
+    let (top, bottom) = if dark {
+        (
+            egui::Color32::from_rgb(34, 40, 58),
+            egui::Color32::from_rgb(14, 16, 24),
+        )
+    } else {
+        (
+            egui::Color32::from_rgb(238, 242, 250),
+            egui::Color32::from_rgb(210, 218, 233),
+        )
+    };
+    let uv = egui::epaint::WHITE_UV;
+    let mut mesh = Mesh::default();
+    mesh.vertices.push(Vertex { pos: rect.left_top(), uv, color: top });
+    mesh.vertices.push(Vertex { pos: rect.right_top(), uv, color: top });
+    mesh.vertices.push(Vertex { pos: rect.right_bottom(), uv, color: bottom });
+    mesh.vertices.push(Vertex { pos: rect.left_bottom(), uv, color: bottom });
+    mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+    painter.add(mesh);
 }

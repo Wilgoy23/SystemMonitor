@@ -95,6 +95,7 @@ pub fn sparkline(ui: &mut egui::Ui, id: &str, history: &History, height: f32, y_
         .show_grid(false)
         .show_x(false)
         .show_y(false)
+        .show_background(false)
         .allow_drag(false)
         .allow_zoom(false)
         .allow_scroll(false)
