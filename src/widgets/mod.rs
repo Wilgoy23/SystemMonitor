@@ -75,32 +75,41 @@ pub trait Widget {
 /// Draw a glassmorphic "bubble" card: a soft drop shadow, a translucent
 /// frosted fill with a light edge highlight, and a weak title row above a
 /// clipped body. `rect` is the full card footprint; the body is laid out
-/// inside consistent padding. egui 0.28 has no real backdrop blur, so the
+/// inside consistent padding. `elevated` lifts the card while it is being
+/// dragged — a deeper shadow and a touch more opaque fill so it reads as
+/// floating above the grid. egui 0.28 has no real backdrop blur, so the
 /// "glass" is a translucent fill over the dashboard's gradient backdrop plus
 /// a highlight stroke — the look without live refraction.
 pub fn card(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     title: &str,
+    elevated: bool,
     body: impl FnOnce(&mut egui::Ui),
 ) {
     let dark = ui.visuals().dark_mode;
     let rounding = egui::Rounding::same(16.0);
 
-    // Soft drop shadow to lift the glass off the backdrop.
+    // Soft drop shadow to lift the glass off the backdrop; deeper when dragged.
     let shadow = egui::epaint::Shadow {
-        offset: egui::vec2(0.0, 6.0),
-        blur: 20.0,
+        offset: egui::vec2(0.0, if elevated { 14.0 } else { 6.0 }),
+        blur: if elevated { 34.0 } else { 20.0 },
         spread: 0.0,
-        color: egui::Color32::from_black_alpha(if dark { 110 } else { 45 }),
+        color: egui::Color32::from_black_alpha(if elevated {
+            if dark { 170 } else { 80 }
+        } else if dark {
+            110
+        } else {
+            45
+        }),
     };
     ui.painter().add(shadow.as_shape(rect, rounding));
 
-    // Frosted fill + bright edge highlight.
+    // Frosted fill + bright edge highlight (a bit more opaque when lifted).
     let fill = if dark {
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 20)
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, if elevated { 34 } else { 20 })
     } else {
-        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 160)
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, if elevated { 205 } else { 160 })
     };
     let stroke = egui::Stroke::new(
         1.0,

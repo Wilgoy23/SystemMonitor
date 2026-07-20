@@ -35,7 +35,9 @@ pub fn pack(footprints: &[(u8, u8)], columns: usize) -> Vec<(usize, usize)> {
 }
 
 /// The number of grid rows a packing occupies — the max `row + height` over
-/// all placements. Zero when empty.
+/// all placements. Zero when empty. (The renderer derives grid height from the
+/// packed rects directly; this remains for the packing unit tests.)
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn row_count(placements: &[(usize, usize)], footprints: &[(u8, u8)]) -> usize {
     placements
         .iter()
