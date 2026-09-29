@@ -1,7 +1,8 @@
 use eframe::egui;
-use crate::dashboard::{Dashboard, WidgetEntry};
+use crate::dashboard::{registry, Dashboard, WidgetEntry};
 use crate::metrics::Source;
 use crate::panels::{self, Panel};
+use crate::widgets::{Widget, WidgetSize};
 use std::time::{Duration, Instant};
 
 /// The pseudo-tab that shows the widget dashboard. Not a `Panel`; handled
@@ -39,6 +40,11 @@ pub struct App {
     dashboard: Dashboard,
     settings: Settings,
     last_refresh: Instant,
+    /// Whether the widget gallery window is open.
+    gallery_open: bool,
+    /// Live preview widgets, one per registry kind, aligned with the catalog.
+    /// Built lazily while the gallery is open and refreshed on the shared tick.
+    previews: Vec<Box<dyn Widget>>,
 }
 
 impl App {
@@ -80,12 +86,106 @@ impl App {
             dashboard,
             settings,
             last_refresh: Instant::now(),
+            gallery_open: false,
+            previews: Vec::new(),
         }
+    }
+
+    /// The widget gallery: a modal listing every registry kind with a live
+    /// preview, an Add button (or "Added" for single-instance kinds already
+    /// present), an unavailable marker, and a Reset-layout action.
+    fn gallery_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.gallery_open;
+        egui::Window::new("Add widget")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_width(430.0);
+                egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
+                    for (i, kind) in registry::catalog().iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            // Live-ish preview at Small size in a fixed, clipped
+                            // box. Reserve the box with allocate_exact_size (so
+                            // the row advances by exactly the box width), then
+                            // render the widget into a detached child_ui whose
+                            // content size never feeds back into this layout —
+                            // otherwise a wide label/bar would stretch the row.
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(120.0, 66.0), egui::Sense::hover());
+                            ui.painter().rect(
+                                rect,
+                                egui::Rounding::same(8.0),
+                                ui.visuals().faint_bg_color,
+                                ui.visuals().widgets.noninteractive.bg_stroke,
+                            );
+                            let inner = rect.shrink(6.0);
+                            let mut child =
+                                ui.child_ui(inner, egui::Layout::top_down(egui::Align::Min), None);
+                            child.set_clip_rect(inner.intersect(ui.clip_rect()));
+                            if let Some(preview) = self.previews.get_mut(i) {
+                                child.push_id(("gallery_preview", kind.id), |ui| {
+                                    preview.ui(ui, WidgetSize::Small);
+                                });
+                            }
+                            ui.add_space(8.0);
+
+                            ui.vertical(|ui| {
+                                ui.strong(kind.name);
+                                ui.weak(kind.description);
+                                let unavailable = self
+                                    .previews
+                                    .get(i)
+                                    .map(|w| !w.available())
+                                    .unwrap_or(false);
+                                if unavailable {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(0xD9, 0x8A, 0x3A),
+                                        "unavailable on this system",
+                                    );
+                                }
+                                ui.add_space(2.0);
+                                let already =
+                                    !kind.multi_instance && self.dashboard.count_of(kind.id) > 0;
+                                if already {
+                                    ui.add_enabled(false, egui::Button::new("Added"));
+                                } else if ui.button("Add").clicked() {
+                                    self.dashboard.add(kind.id);
+                                }
+                            });
+                        });
+                        ui.separator();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Reset layout").clicked() {
+                        self.dashboard.reset();
+                    }
+                });
+            });
+        self.gallery_open = open;
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // The dashboard is the standalone full-screen home; the panel tab
+        // strip only appears once the user has drilled into the detail layer.
+        let on_home = self
+            .settings
+            .active_tab
+            .as_deref()
+            .map_or(true, |t| t == DASHBOARD_TAB);
+
+        // Gallery previews are only needed while the gallery is open; build them
+        // lazily (this also defers the GPU widget's NVML init until first open).
+        if self.gallery_open && self.previews.is_empty() {
+            self.previews = registry::catalog().iter().map(|k| (k.factory)()).collect();
+        } else if !self.gallery_open && !self.previews.is_empty() {
+            self.previews.clear();
+        }
+
         if !self.settings.paused
             && self.last_refresh.elapsed() >= Duration::from_millis(self.settings.refresh_ms)
         {
@@ -94,40 +194,51 @@ impl eframe::App for App {
                 panel.refresh(&handles);
             }
             self.dashboard.refresh(&handles);
+            if self.gallery_open {
+                for preview in &mut self.previews {
+                    preview.refresh(&handles);
+                }
+            }
             self.last_refresh = Instant::now();
         }
 
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let settings = &mut self.settings;
-                ui.checkbox(&mut settings.paused, "⏸ Pause");
+                ui.checkbox(&mut self.settings.paused, "⏸ Pause");
                 ui.separator();
                 ui.label("Refresh:");
-                ui.add(egui::Slider::new(&mut settings.refresh_ms, 250..=5000).suffix(" ms"));
+                ui.add(egui::Slider::new(&mut self.settings.refresh_ms, 250..=5000).suffix(" ms"));
                 ui.separator();
                 ui.menu_button("Panels ⏷", |ui| {
                     for panel in &self.panels {
                         let name = panel.name().to_string();
-                        let mut shown = !settings.hidden.iter().any(|h| h == &name);
+                        let mut shown = !self.settings.hidden.iter().any(|h| h == &name);
                         if ui.checkbox(&mut shown, &name).changed() {
                             if shown {
-                                settings.hidden.retain(|h| h != &name);
+                                self.settings.hidden.retain(|h| h != &name);
                             } else {
-                                settings.hidden.push(name);
+                                self.settings.hidden.push(name);
                             }
                         }
                     }
                 });
+
+                // Dashboard-only controls: add widgets and toggle edit mode.
+                if on_home {
+                    ui.separator();
+                    if ui.button("+ Add widget").clicked() {
+                        self.gallery_open = true;
+                    }
+                    let edit_label = if self.dashboard.edit { "Done" } else { "Edit" };
+                    if ui
+                        .selectable_label(self.dashboard.edit, edit_label)
+                        .clicked()
+                    {
+                        self.dashboard.edit = !self.dashboard.edit;
+                    }
+                }
             });
         });
-
-        // The dashboard is the standalone full-screen home; the panel tab
-        // strip only appears once the user has drilled into the detail layer.
-        let on_home = self
-            .settings
-            .active_tab
-            .as_deref()
-            .map_or(true, |t| t == DASHBOARD_TAB);
 
         if !on_home {
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
@@ -214,13 +325,22 @@ impl eframe::App for App {
                 // Full-screen standalone home: gradient backdrop behind a
                 // reflowing grid of glass bubbles. Clicking one drills into
                 // its panel (the detail layer).
+                // Esc leaves edit mode (matches the Done button).
+                if self.dashboard.edit && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.dashboard.edit = false;
+                }
+
                 let backdrop = ui.max_rect();
                 crate::dashboard::paint_backdrop(ui.painter(), backdrop, ui.visuals().dark_mode);
                 egui::ScrollArea::vertical()
                     .show(ui, |ui| {
                         ui.add_space(8.0);
-                        if let Some(panel) = self.dashboard.ui(ui) {
+                        let action = self.dashboard.ui(ui);
+                        if let Some(panel) = action.open_panel {
                             self.settings.active_tab = Some(panel);
+                        }
+                        if action.open_gallery {
+                            self.gallery_open = true;
                         }
                     });
                 return;
@@ -255,6 +375,10 @@ impl eframe::App for App {
                 }
             }
         });
+
+        if self.gallery_open {
+            self.gallery_window(ctx);
+        }
 
         // Only keep animating while actively refreshing.
         if !self.settings.paused {

@@ -1,9 +1,13 @@
+use std::time::{Duration, Instant};
 use eframe::egui;
 use crate::metrics::SysHandles;
 use crate::widgets::{self, Widget, WidgetSize};
 
 mod layout;
-mod registry;
+pub mod registry;
+
+/// How long the undo toast lingers after a widget is removed.
+const UNDO_WINDOW: Duration = Duration::from_secs(5);
 
 /// Target edge length of one grid cell at 1.0 UI scale.
 const CELL: f32 = 150.0;
@@ -36,11 +40,33 @@ struct Drag {
     grab_offset: egui::Vec2,
 }
 
+/// A just-removed widget, held so the undo toast can restore it at its original
+/// position for a few seconds.
+struct Undo {
+    entry: WidgetEntry,
+    index: usize,
+    at: Instant,
+}
+
+/// What the dashboard is asking the host app to do this frame.
+#[derive(Default)]
+pub struct DashboardAction {
+    /// Open this panel (a widget was clicked in normal mode).
+    pub open_panel: Option<String>,
+    /// Open the widget gallery (the empty-state Add button was clicked).
+    pub open_gallery: bool,
+}
+
 /// The dashboard view: owns live widget instances and renders them as a
 /// reflowing grid of bubble cards.
 pub struct Dashboard {
     instances: Vec<Instance>,
     drag: Option<Drag>,
+    /// Edit mode shows per-card remove/resize badges and suppresses click-through.
+    pub edit: bool,
+    undo: Option<Undo>,
+    /// Next instance id to hand out; kept unique within the live layout.
+    next_id: u64,
 }
 
 impl Dashboard {
@@ -59,9 +85,13 @@ impl Dashboard {
                 })
             })
             .collect();
+        let next_id = entries.iter().map(|e| e.id).max().unwrap_or(0) + 1;
         Self {
             instances,
             drag: None,
+            edit: false,
+            undo: None,
+            next_id,
         }
     }
 
@@ -104,16 +134,106 @@ impl Dashboard {
         }
     }
 
-    /// Render the grid. Returns the name of a linked panel if a widget was
-    /// clicked, so the caller can navigate to it. Cards can be dragged to
-    /// reorder: the grid reflows to open a slot, positions animate to their
-    /// targets, and the new order is committed on drop (persisted by the
-    /// caller via `to_entries`). A plain click still opens the linked panel —
-    /// egui's click/drag disambiguation means a drag never fires a click.
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<String> {
+    /// Append a widget of `kind` at its default size and enter edit mode so the
+    /// user can place it. No-op for unknown kinds.
+    pub fn add(&mut self, kind: &str) {
+        if let Some(widget) = registry::make(kind) {
+            let size = widget
+                .supported_sizes()
+                .first()
+                .copied()
+                .unwrap_or(WidgetSize::Small);
+            let id = self.next_id;
+            self.next_id += 1;
+            self.instances.push(Instance { id, size, widget });
+            self.edit = true;
+        }
+    }
+
+    /// How many live instances of `kind` exist (for the gallery's "Added" state).
+    pub fn count_of(&self, kind: &str) -> usize {
+        self.instances.iter().filter(|i| i.widget.kind() == kind).count()
+    }
+
+    /// Restore the default widget set and order, leaving edit mode.
+    pub fn reset(&mut self) {
+        let next_id = self.next_id;
+        *self = Dashboard::from_entries(&Dashboard::default_layout());
+        // Preserve the id counter so a later undo can't collide with a reused id.
+        self.next_id = next_id.max(self.next_id);
+    }
+
+    /// Remove the instance at `index`, stashing it for the undo toast.
+    fn remove_at(&mut self, index: usize) {
+        if index >= self.instances.len() {
+            return;
+        }
+        let inst = self.instances.remove(index);
+        self.undo = Some(Undo {
+            entry: WidgetEntry {
+                kind: inst.widget.kind().into(),
+                id: inst.id,
+                size: inst.size,
+                config: inst.widget.config(),
+            },
+            index,
+            at: Instant::now(),
+        });
+    }
+
+    /// Restore the most recently removed widget to its original position.
+    fn apply_undo(&mut self) {
+        if let Some(u) = self.undo.take() {
+            if let Some(mut widget) = registry::make(&u.entry.kind) {
+                widget.set_config(&u.entry.config);
+                let idx = u.index.min(self.instances.len());
+                self.instances.insert(
+                    idx,
+                    Instance {
+                        id: u.entry.id,
+                        size: u.entry.size,
+                        widget,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Cycle the instance at `index` to the next size its kind supports.
+    fn cycle_size(&mut self, index: usize) {
+        let Some(inst) = self.instances.get_mut(index) else {
+            return;
+        };
+        let sizes = inst.widget.supported_sizes();
+        let pos = sizes.iter().position(|&s| s == inst.size).unwrap_or(0);
+        inst.size = sizes[(pos + 1) % sizes.len().max(1)];
+    }
+
+    /// Render the grid and report what the app should do this frame. Cards can
+    /// be dragged to reorder (reflow + animate + commit on drop). In normal
+    /// mode a plain click opens the linked panel; in edit mode each card shows
+    /// remove/resize badges and click-through is suppressed. A removed widget
+    /// can be restored from the undo toast for a few seconds.
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> DashboardAction {
+        let mut action = DashboardAction::default();
+        let ctx = ui.ctx().clone();
+
+        // Undo toast (drawn on its own layer so it floats over everything, and
+        // survives even the empty state so a last-widget removal is reversible).
+        self.undo_toast(&ctx);
+
         if self.instances.is_empty() {
-            ui.weak("No widgets.");
-            return None;
+            ui.vertical_centered(|ui| {
+                ui.add_space(80.0);
+                ui.label(egui::RichText::new("Your dashboard is empty").size(18.0));
+                ui.add_space(6.0);
+                ui.weak("Add a widget to start monitoring at a glance.");
+                ui.add_space(12.0);
+                if ui.button("+ Add widget").clicked() {
+                    action.open_gallery = true;
+                }
+            });
+            return action;
         }
 
         let avail = ui.available_width();
@@ -134,7 +254,6 @@ impl Dashboard {
             egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h))
         };
 
-        let ctx = ui.ctx().clone();
         let pointer = ctx.pointer_interact_pos();
 
         // Base layout in the current order; the reference for hit-testing the
@@ -188,6 +307,8 @@ impl Dashboard {
         let mut just_started: Option<(u64, egui::Vec2)> = None;
         let mut stopped = false;
         let mut floating: Option<(usize, egui::Rect)> = None;
+        let mut remove_index: Option<usize> = None;
+        let mut size_change: Option<usize> = None;
 
         for i in 0..n {
             let card_id = egui::Id::new(("widget_card", self.instances[i].id));
@@ -224,33 +345,81 @@ impl Dashboard {
 
             let title = self.instances[i].widget.title();
             let size = self.instances[i].size;
+            // Scope each body under the instance id so inner ids (plot handles,
+            // grids) stay unique across instances and the gallery previews.
             widgets::card(ui, rect, &title, false, |ui| {
-                self.instances[i].widget.ui(ui, size)
+                ui.push_id(id, |ui| self.instances[i].widget.ui(ui, size));
             });
+
+            // Edit-mode badge rects (also used to keep a badge press from
+            // starting a card drag).
+            let has_size_toggle = self.instances[i].widget.supported_sizes().len() > 1;
+            let rm_rect = egui::Rect::from_min_size(rect.min + egui::vec2(6.0, 6.0), egui::vec2(22.0, 22.0));
+            let sz_rect = egui::Rect::from_min_size(rect.max - egui::vec2(30.0, 28.0), egui::vec2(24.0, 22.0));
 
             // One interaction per card, sensing both click and drag (a single
             // widget — layering a drag widget over a click one eats the click).
             let resp = ui
                 .interact(rect, card_id, egui::Sense::click_and_drag())
-                .on_hover_cursor(egui::CursorIcon::Grab);
+                .on_hover_cursor(if self.edit {
+                    egui::CursorIcon::Grab
+                } else {
+                    egui::CursorIcon::PointingHand
+                });
             if resp.drag_started() {
                 if let Some(pp) = resp.interact_pointer_pos() {
-                    just_started = Some((id, pp - rect.min));
+                    let on_badge = self.edit
+                        && (rm_rect.contains(pp) || (has_size_toggle && sz_rect.contains(pp)));
+                    if !on_badge {
+                        just_started = Some((id, pp - rect.min));
+                    }
                 }
             }
-            if resp.clicked() {
+            // Click-through only in normal mode; edit mode is for arranging.
+            if !self.edit && resp.clicked() {
                 if let Some(panel) = self.instances[i].widget.linked_panel() {
                     clicked_panel = Some(panel.to_string());
+                }
+            }
+
+            // Edit-mode badges, drawn (and interacted) after the card so they
+            // sit on top and win the click.
+            if self.edit {
+                if ui
+                    .put(
+                        rm_rect,
+                        egui::Button::new(egui::RichText::new("×").size(15.0))
+                            .rounding(11.0),
+                    )
+                    .on_hover_text("Remove")
+                    .clicked()
+                {
+                    remove_index = Some(i);
+                }
+                if has_size_toggle {
+                    let letter = match self.instances[i].size {
+                        WidgetSize::Small => "S",
+                        WidgetSize::Medium => "M",
+                        WidgetSize::Large => "L",
+                    };
+                    if ui
+                        .put(sz_rect, egui::Button::new(letter).rounding(6.0))
+                        .on_hover_text("Cycle size")
+                        .clicked()
+                    {
+                        size_change = Some(i);
+                    }
                 }
             }
         }
 
         // Draw the lifted card last so it floats above the grid.
         if let Some((i, fr)) = floating {
+            let id = self.instances[i].id;
             let title = self.instances[i].widget.title();
             let size = self.instances[i].size;
             widgets::card(ui, fr, &title, true, |ui| {
-                self.instances[i].widget.ui(ui, size)
+                ui.push_id(id, |ui| self.instances[i].widget.ui(ui, size));
             });
         }
 
@@ -269,6 +438,14 @@ impl Dashboard {
             ctx.request_repaint(); // keep following the pointer smoothly
         }
 
+        // Edit-mode mutations, applied after the layout pass so indices stay valid.
+        if let Some(i) = size_change {
+            self.cycle_size(i);
+        }
+        if let Some(i) = remove_index {
+            self.remove_at(i);
+        }
+
         // Reserve the grid's footprint so the scroll area sizes correctly.
         let total_h = targets
             .iter()
@@ -278,7 +455,41 @@ impl Dashboard {
             - origin.y;
         ui.allocate_space(egui::vec2(avail, total_h));
 
-        clicked_panel
+        action.open_panel = clicked_panel;
+        action
+    }
+
+    /// Draw the "widget removed — Undo" toast when a removal is pending, and
+    /// expire it after `UNDO_WINDOW`. Applies the undo if the button is hit.
+    fn undo_toast(&mut self, ctx: &egui::Context) {
+        let Some(undo) = &self.undo else {
+            return;
+        };
+        if undo.at.elapsed() >= UNDO_WINDOW {
+            self.undo = None;
+            return;
+        }
+
+        let mut do_undo = false;
+        egui::Area::new(egui::Id::new("dashboard_undo_toast"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -28.0))
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Widget removed");
+                        if ui.button("Undo").clicked() {
+                            do_undo = true;
+                        }
+                    });
+                });
+            });
+        // Keep the frame ticking so the toast can expire on time.
+        ctx.request_repaint_after(Duration::from_millis(250));
+
+        if do_undo {
+            self.apply_undo();
+        }
     }
 }
 
