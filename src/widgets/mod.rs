@@ -2,14 +2,22 @@ use eframe::egui;
 use crate::metrics::SysHandles;
 
 mod cpu;
+mod disk;
+mod gpu;
 mod memory;
 mod network;
+mod processes;
 mod system;
+mod temps;
 
 pub use cpu::CpuWidget;
+pub use disk::DiskWidget;
+pub use gpu::GpuWidget;
 pub use memory::MemoryWidget;
 pub use network::NetworkWidget;
+pub use processes::ProcessesWidget;
 pub use system::SystemWidget;
+pub use temps::TempsWidget;
 
 /// The size classes a widget can occupy, expressed as a footprint on the
 /// dashboard's square-cell grid. The first entry a kind lists is its default.
@@ -55,6 +63,13 @@ pub trait Widget {
     /// Panel name to open on click, if any.
     fn linked_panel(&self) -> Option<&'static str> {
         None
+    }
+
+    /// Whether the widget currently has data to show. Widgets backed by
+    /// optional hardware (GPU, temp sensors) return false when absent, so the
+    /// gallery can mark them unavailable and the card shows an "n/a" body.
+    fn available(&self) -> bool {
+        true
     }
 
     /// Serialize per-instance config (interface name, mount, ...).
