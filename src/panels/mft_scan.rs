@@ -27,9 +27,7 @@ pub fn run_scan(drive_root: PathBuf, tx: Sender<ScanResult>) {
 
 #[cfg(windows)]
 fn scan(drive_root: PathBuf) -> ScanResult {
-    use ntfs_reader::file_info::{FileInfo, HashMapCache};
-    use ntfs_reader::mft::Mft;
-    use ntfs_reader::volume::Volume;
+    use ntfs_reader::{DefaultPathCache, FileInfo, Mft, Volume};
 
     // "C:\" -> drive letter 'C' -> raw device path r"\\.\C:".
     let root_str = drive_root.to_string_lossy();
@@ -49,31 +47,39 @@ fn scan(drive_root: PathBuf) -> ScanResult {
 
     let mut children: HashMap<PathBuf, Vec<EntryInfo>> = HashMap::new();
     let mut totals: HashMap<PathBuf, u64> = HashMap::new();
-    let mut cache = HashMapCache::default();
+    let mut cache = DefaultPathCache::default();
+    let cluster_size = mft.volume().cluster_size();
 
     for file in mft.files() {
-        let info = FileInfo::with_cache(&mft, &file, &mut cache);
-        if info.path.as_os_str().is_empty() {
+        let info = FileInfo::with_cache(&file, &mut cache);
+        let Some(path) = info.path.as_ref() else {
             continue; // path reconstruction failed for this record
-        }
+        };
 
-        let raw = info.path.to_string_lossy();
+        let raw = path.to_string_lossy();
         let rel = raw.strip_prefix(device.as_str()).unwrap_or(&raw);
         let real = PathBuf::from(format!("{base}{rel}"));
+
+        // Dir sizes are fixed up after aggregation.
+        let size = if info.is_directory {
+            0
+        } else {
+            size_on_disk(&file, &real, info.size, cluster_size)
+        };
 
         if let Some(parent) = real.parent() {
             children.entry(parent.to_path_buf()).or_default().push(EntryInfo {
                 name: info.name.clone(),
                 path: real.clone(),
-                size: info.size, // dir sizes are fixed up after aggregation
+                size,
                 is_dir: info.is_directory,
             });
         }
 
         // Every file's bytes count toward each of its ancestor directories.
-        if !info.is_directory && info.size > 0 {
+        if size > 0 {
             for ancestor in real.ancestors().skip(1) {
-                *totals.entry(ancestor.to_path_buf()).or_insert(0) += info.size;
+                *totals.entry(ancestor.to_path_buf()).or_insert(0) += size;
             }
         }
     }
@@ -94,6 +100,43 @@ fn scan(drive_root: PathBuf) -> ScanResult {
         children,
         totals,
     })
+}
+
+/// Bytes a file's default stream occupies in clusters — Explorer's "Size on
+/// disk". Worked out from the stream's data runs already in memory, so it
+/// costs no extra volume reads: sparse holes count for nothing and data small
+/// enough to live inside the MFT record (resident) takes no clusters at all.
+#[cfg(windows)]
+fn size_on_disk(
+    file: &ntfs_reader::NtfsFile<'_>,
+    path: &std::path::Path,
+    logical: u64,
+    cluster_size: u64,
+) -> u64 {
+    use ntfs_reader::{ExtentLocation, NtfsReaderError};
+
+    let stream = match file.open_stream(None) {
+        // CompactOS (WOF) files keep a sparse placeholder as their default
+        // stream; the real compressed bytes live in this named stream.
+        Err(NtfsReaderError::WofCompressedStream) => {
+            file.open_stream(Some(std::ffi::OsStr::new("WofCompressedData")))
+        }
+        other => other,
+    };
+
+    match stream {
+        Ok(stream) => stream
+            .extents()
+            .iter()
+            .filter(|e| matches!(e.location, ExtentLocation::Volume { .. }))
+            // Extents start on cluster boundaries but the last one is cut at
+            // the logical size; round each back up to whole clusters.
+            .map(|e| e.length.div_ceil(cluster_size) * cluster_size)
+            .sum(),
+        // NTFS-compressed or encrypted streams can't be laid out from the MFT
+        // alone, and they're rare — ask Windows for just these.
+        Err(_) => super::explorer::size_on_disk(path, logical),
+    }
 }
 
 #[cfg(not(windows))]

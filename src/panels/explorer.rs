@@ -197,7 +197,7 @@ impl Panel for ExplorerPanel {
                                 .button(label)
                                 .on_hover_text(
                                     "Read the NTFS Master File Table directly — sizes the whole \
-                                     drive in seconds. Sizes shown are logical (not on-disk).",
+                                     drive in seconds.",
                                 )
                                 .clicked()
                             {
@@ -227,11 +227,7 @@ impl Panel for ExplorerPanel {
                     .num_columns(4)
                     .show(ui, |ui| {
                         ui.strong("Name");
-                        ui.strong(if self.viewing_tree {
-                            "Size (MFT)"
-                        } else {
-                            "Size on disk"
-                        });
+                        ui.strong("Size on disk");
                         ui.strong("");
                         ui.strong("");
                         ui.end_row();
@@ -448,7 +444,7 @@ fn dir_size(root: &Path) -> u64 {
 /// the value Windows Explorer labels "Size on disk". Falls back to the logical
 /// size if the query fails (e.g. the file is locked or access-denied).
 #[cfg(windows)]
-fn size_on_disk(path: &Path, logical: u64) -> u64 {
+pub(super) fn size_on_disk(path: &Path, logical: u64) -> u64 {
     use std::os::windows::ffi::OsStrExt;
 
     // GetCompressedFileSizeW reports the real on-disk footprint, honouring
@@ -479,7 +475,7 @@ fn size_on_disk(path: &Path, logical: u64) -> u64 {
 }
 
 #[cfg(not(windows))]
-fn size_on_disk(_path: &Path, logical: u64) -> u64 {
+pub(super) fn size_on_disk(_path: &Path, logical: u64) -> u64 {
     logical
 }
 

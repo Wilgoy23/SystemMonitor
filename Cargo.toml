@@ -18,5 +18,5 @@ lto = true
 strip = true
 
 [target."cfg(windows)".dependencies]
-ntfs-reader = "0.4.5"
+ntfs-reader = "0.5.3"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
